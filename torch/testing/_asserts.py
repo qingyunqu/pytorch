@@ -174,6 +174,7 @@ _Trace = namedtuple(
 
 def _trace_mismatches(a: torch.Tensor, b: torch.Tensor, mismatches: torch.Tensor) -> _Trace:
     """Traces mismatches and returns the found information.
+
     The returned named tuple has the following fields:
     - total_elements (int): Total number of values.
     - total_mismatches (int): Total number of mismatches.
