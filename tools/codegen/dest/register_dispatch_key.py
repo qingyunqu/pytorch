@@ -452,13 +452,13 @@ return {sig.name()}({', '.join(e.expr for e in translate(cpp_sig.arguments(), si
             # add it to the context
             out_args = structured.out_arguments(self.g)
             for i, out_arg in enumerate(out_args):
-                assert ConstRefCType(BaseCType("Tensor", out_arg.ctype.name)) == out_arg.ctype
+                assert ConstRefCType(BaseCType(tensorT, out_arg.ctype.name)) == out_arg.ctype
                 context.append(Expr(
                     expr=f"op.outputs_[{i}]",
                     # TODO: Stop hardcoding that the output type is a Tensor.  Note
                     # that for the codegen here this is fine because outputs_ is
                     # hardcoded to be tensor already
-                    type=MutRefCType(BaseCType("Tensor", out_arg.ctype.name)),
+                    type=MutRefCType(BaseCType(tensorT, out_arg.ctype.name)),
                 ))
 
             # With the expanded context, do the impl call (if not a meta
