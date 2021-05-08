@@ -451,7 +451,7 @@ inline c10::MemoryFormat compute_output_memory_format(const TensorList &inputs) 
   return format.value();
 }
 
-Tensor& cat_out_cuda(TensorList inputs, int64_t dimension, Tensor& out) {
+TORCH_IMPL_FUNC(cat_out_cuda)(TensorList inputs, int64_t dimension, const Tensor& out) {
 
   // previously, size [0] tensors were the only possible empty tensors; thus, it
   // wasn't possible to cat empty tensors unless all the other tensors were

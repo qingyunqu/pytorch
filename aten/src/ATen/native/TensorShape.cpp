@@ -27,6 +27,78 @@
 #include <vector>
 
 namespace at {
+namespace {
+// Check to see if the shape of tensors is compatible
+// for being concatenated along a given dimension.
+static inline void check_cat_shape_except_dim(const Tensor & first, const Tensor & second, int64_t dimension, int64_t index) {
+  int64_t first_dims = first.dim();
+  int64_t second_dims = second.dim();
+  TORCH_CHECK(first_dims == second_dims, "torch.cat(): Tensors must have same number of dimensions: got ",
+              first_dims, " and ", second_dims);
+  for (int64_t dim = 0; dim < first_dims; dim++) {
+    if (dim == dimension) {
+      continue;
+    }
+    int64_t first_dim_size = first.sizes()[dim];
+    int64_t second_dim_size = second.sizes()[dim];
+    TORCH_CHECK(first_dim_size == second_dim_size, "torch.cat(): Sizes of tensors must match except in dimension ",
+                dimension, ". Got ", first_dim_size, " and ", second_dim_size, " in dimension ", dim,
+                " (The offending index is ", index, ")");
+  }
+}
+
+static bool should_skip(const Tensor& t) {
+  return t.numel() == 0 && t.dim() == 1;
+}
+} // namespace
+
+namespace meta {
+TORCH_META_FUNC(_cat)(TensorList tensors, int64_t dim) {
+  // previously, size [0] tensors were the only possible empty tensors; thus, it wasn't possible
+  // to cat empty tensors unless all the other tensors were 1-dimensional, so we allowed these tensors
+  // to be "skipped".  We maintain this behavior for backwards compatibility, but only for this specific
+  // size (i.e. other empty sizes are not skipped).
+  const Tensor* pnotSkippedTensor = [](TensorList tensors) -> const Tensor* {
+    for (auto const &tensor : tensors) {
+      if (should_skip(tensor)) {
+        continue;
+      }
+      // we've found a non-empty tensor
+      return &tensor;
+    }
+    return nullptr;
+  }(tensors);
+
+  if (!pnotSkippedTensor) {
+    // FIXME: warn if this is the case -- see comment about skipped
+    // tensors at top of function.
+    return;
+  }
+  const Tensor& notSkippedTensor = *pnotSkippedTensor;
+  TORCH_CHECK(tensors.size() > 0, "torch.cat(): expected a non-empty list of Tensors");
+  TORCH_CHECK(dim <= notSkippedTensor.dim(), "torch.cat(): dimension ", dim, "out of range");
+
+  // compute size of the result in the cat dimension
+  int64_t cat_dim_size = 0;
+  auto first_tensor_mem_format = tensors[0].suggest_memory_format();
+  for (const auto i : c10::irange(tensors.size())) {
+    auto const &tensor = tensors[i];
+    if (should_skip(tensor)) {
+      // don't use fast path for empty tensor
+      continue;
+    }
+    check_cat_shape_except_dim(notSkippedTensor, tensor, dim, i);
+    cat_dim_size += tensor.sizes()[dim];
+  }
+  // compute the size of the result
+  auto result_size = notSkippedTensor.sizes().vec();
+  result_size[dim] = cat_dim_size;
+
+  ScalarType high_type = at::native::result_type(tensors);
+  set_output(0, result_size, {}, tensors[0].options().dtype(high_type).memory_format(first_tensor_mem_format), {});
+}
+} // namespace meta
+
 namespace native {
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
@@ -96,30 +168,7 @@ std::vector<Tensor> broadcast_tensors(TensorList tensors) {
   return expand_outplace(tensors);
 }
 
-// Check to see if the shape of tensors is compatible
-// for being concatenated along a given dimension.
-static inline void check_cat_shape_except_dim(const Tensor & first, const Tensor & second, int64_t dimension, int64_t index) {
-  int64_t first_dims = first.dim();
-  int64_t second_dims = second.dim();
-  TORCH_CHECK(first_dims == second_dims, "torch.cat(): Tensors must have same number of dimensions: got ",
-              first_dims, " and ", second_dims);
-  for (int64_t dim = 0; dim < first_dims; dim++) {
-    if (dim == dimension) {
-      continue;
-    }
-    int64_t first_dim_size = first.sizes()[dim];
-    int64_t second_dim_size = second.sizes()[dim];
-    TORCH_CHECK(first_dim_size == second_dim_size, "torch.cat(): Sizes of tensors must match except in dimension ",
-                dimension, ". Got ", first_dim_size, " and ", second_dim_size, " in dimension ", dim,
-                " (The offending index is ", index, ")");
-  }
-}
-
-static bool should_skip(const Tensor& t) {
-  return t.numel() == 0 && t.dim() == 1;
-}
-
-Tensor & _cat_out_cpu(TensorList tensors, int64_t dim, Tensor& result) {
+TORCH_IMPL_FUNC(_cat_out_cpu)(TensorList tensors, int64_t dim, const Tensor& result) {
   // previously, size [0] tensors were the only possible empty tensors; thus, it wasn't possible
   // to cat empty tensors unless all the other tensors were 1-dimensional, so we allowed these tensors
   // to be "skipped".  We maintain this behavior for backwards compatibility, but only for this specific
@@ -151,12 +200,9 @@ Tensor & _cat_out_cpu(TensorList tensors, int64_t dim, Tensor& result) {
   if (!pnotSkippedTensor) {
     // FIXME: warn if this is the case -- see comment about skipped
     // tensors at top of function.
-    return result;
+    return;
   }
   const Tensor& notSkippedTensor = *pnotSkippedTensor;
-
-  TORCH_CHECK(tensors.size() > 0, "torch.cat(): expected a non-empty list of Tensors");
-  TORCH_CHECK(dim <= notSkippedTensor.dim(), "torch.cat(): dimension ", dim, "out of range");
 
   // when the input tensors are of the same size and strides,
   // reuse the same iterator for all input tensors
@@ -165,8 +211,6 @@ Tensor & _cat_out_cpu(TensorList tensors, int64_t dim, Tensor& result) {
   // Check the type of the result
   no_type_promotion = result.dtype() == notSkippedTensor.dtype();
 
-  // compute size of the result in the cat dimension
-  int64_t cat_dim_size = 0;
   auto first_tensor_mem_format = tensors[0].suggest_memory_format();
   for (const auto i : c10::irange(tensors.size())) {
     auto const &tensor = tensors[i];
@@ -175,8 +219,6 @@ Tensor & _cat_out_cpu(TensorList tensors, int64_t dim, Tensor& result) {
       allContiguous = false;
       continue;
     }
-    check_cat_shape_except_dim(notSkippedTensor, tensor, dim, i);
-    cat_dim_size += tensor.sizes()[dim];
 
     if (!tensor.is_contiguous(first_tensor_mem_format)) {
       allContiguous = false;
@@ -190,17 +232,9 @@ Tensor & _cat_out_cpu(TensorList tensors, int64_t dim, Tensor& result) {
       no_type_promotion = false;
     }
   }
-  // compute the size of the result
-  auto result_size = notSkippedTensor.sizes().vec();
-  result_size[dim] = cat_dim_size;
-
-  // skip resizing if size of result is same as expected
-  if (result.sizes() != result_size) {
-    result.resize_(result_size, first_tensor_mem_format);
-  }
 
   if (result.numel() == 0) {
-    return result;
+    return;
   }
 
   // fast path for single thread when both inputs and result are contiguous and not empty
@@ -210,7 +244,7 @@ Tensor & _cat_out_cpu(TensorList tensors, int64_t dim, Tensor& result) {
   bool serial_dtype = (dtype == ScalarType::Double || dtype == ScalarType::Float || dtype == ScalarType::BFloat16);
   if (use_serial_kernel && allContiguous && no_type_promotion && serial_dtype) {
     cat_serial_stub(kCPU, result, tensors, dim);
-    return result;
+    return;
   }
 
   int64_t offset = 0;
@@ -263,14 +297,7 @@ Tensor & _cat_out_cpu(TensorList tensors, int64_t dim, Tensor& result) {
       offset += slice_dim_size;
     }
   }
-
-  return result;
-}
-
-Tensor _cat_cpu(TensorList tensors, int64_t dim) {
-  ScalarType high_type = result_type(tensors);
-  Tensor result = at::empty({0}, tensors[0].options().dtype(high_type));
-  return native::_cat_out_cpu(tensors, dim, result);
+  return;
 }
 
 static void check_cat_no_zero_dim(TensorList tensors) {
