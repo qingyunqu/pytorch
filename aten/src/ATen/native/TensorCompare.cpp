@@ -8,7 +8,17 @@
 #include <ATen/native/TensorCompare.h>
 #include <ATen/NamedTensorUtils.h>
 
-namespace at { namespace native {
+namespace at {
+namespace meta {
+TORCH_META_FUNC(clamp)(const Tensor& self, const c10::optional<Scalar>& min, const c10::optional<Scalar>& max) {
+  if (!min && !max) {
+    TORCH_CHECK(false, "torch.clamp: At least one of 'min' or 'max' must not be None");
+  }
+  build_unary_op(maybe_get_output(), self);
+}
+} // namespace meta
+
+namespace native {
 
 DEFINE_DISPATCH(where_kernel); // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 DEFINE_DISPATCH(max_stub); // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
@@ -482,18 +492,14 @@ std::tuple<Tensor&, Tensor&> min_out(
   return result;
 }
 
-Tensor& clamp_out(const Tensor& self, const c10::optional<Scalar>& min, const c10::optional<Scalar>& max, Tensor& result) {
+TORCH_IMPL_FUNC(clamp_out)(const Tensor& self, const c10::optional<Scalar>& min, const c10::optional<Scalar>& max, const Tensor& result) {
   if (min && max) {
-    auto iter = TensorIterator::unary_op(result, self);
-    clamp_scalar_stub(iter.device_type(), iter, *min, *max);
+    clamp_scalar_stub(device_type(), *this, *min, *max);
   } else if (max) {
-    at::clamp_max_outf(self, *max, result);
+    clamp_max_scalar_stub(device_type(), *this, *max);
   } else if (min) {
-    at::clamp_min_outf(self, *min, result);
-  } else {
-    TORCH_CHECK(false, "torch.clamp: At least one of 'min' or 'max' must not be None");
+    clamp_min_scalar_stub(device_type(), *this, *min);
   }
-  return result;
 }
 
 Tensor& clamp_out(const Tensor& self, const c10::optional<Tensor>& min,
@@ -522,18 +528,9 @@ Tensor& clamp_out(const Tensor& self, const c10::optional<Tensor>& min,
   return result;
 }
 
-Tensor clamp(const Tensor& self, const c10::optional<Scalar>& min, const c10::optional<Scalar>& max) {
-  Tensor result = at::empty({0}, self.options());
-  return at::clamp_outf(self, min, max, result);
-}
-
 Tensor clamp(const Tensor& self, const c10::optional<Tensor>& min, const c10::optional<Tensor>& max) {
   Tensor result = at::empty({0}, self.options());
   return at::clamp_outf(self, min, max, result);
-}
-
-Tensor& clamp_(Tensor& self, const c10::optional<Scalar>& min, const c10::optional<Scalar>& max) {
-  return at::clamp_outf(self, min, max, self);
 }
 
 Tensor& clamp_(Tensor& self, const c10::optional<Tensor>& min, const c10::optional<Tensor>& max) {
